@@ -106,6 +106,7 @@ my $TOOL_VERSION = "1.6";
 
 my $URL = "https://linux-hardware.org";
 my $URL_BSD = "https://bsd-hardware.info";
+my $URL_Haiku = "https://haiku-hardware.info";
 
 my $GITHUB = "https://github.com/linuxhw/hw-probe";
 
@@ -118,6 +119,9 @@ my $TMP_LOCAL = ".tmp_".basename($TMP_DIR);
 my $SNAP_DESKTOP = (defined $ENV{"BAMF_DESKTOP_FILE_HINT"});
 my $FLATPAK_DESKTOP = (grep { $_ eq "-flatpak" } @ARGV);
 my $BY_DESKTOP = 0;
+
+my @KNOWN_BSD = ("clonos", "desktopbsd", "dragonfly", "freenas", "fuguita", "furybsd", "ghostbsd", "hardenedbsd", "hellosystem", "libertybsd", "midnightbsd", "nomadbsd", "opnsense", "os108", "pcbsd", "pfsense", "truenas", "trueos", "xigmanas", "arisblu");
+my $KNOWN_BSD_ALL = join("|", @KNOWN_BSD);
 
 my @ARGV_COPY = @ARGV;
 
@@ -133,6 +137,11 @@ if(isBSD($^O))
 {
     $CmdExample = $CmdName;
     $GlobalSubject = "BSD";
+}
+elsif(isHaiku($^O))
+{
+    $CmdExample = $CmdName;
+    $GlobalSubject = "Haiku";
 }
 
 my $ShortUsage = "Hardware Probe $TOOL_VERSION
@@ -268,6 +277,13 @@ elsif($Opt{"Flatpak"})
     $TMP_DIR = "/var".$TMP_DIR;
     mkpath($TMP_DIR);
     
+    $PROBE_DIR = $ENV{"XDG_DATA_HOME"}."/HW_PROBE";
+}
+elsif(isHaiku($^O))
+{
+    $TMP_DIR = "/var".$TMP_DIR;
+    mkpath($TMP_DIR);
+
     $PROBE_DIR = $ENV{"XDG_DATA_HOME"}."/HW_PROBE";
 }
 
@@ -1951,9 +1967,6 @@ my $ALL_MON_VENDORS = "Acer|ADI|AGO|ALP|Ancor Communications Inc|AOC|Apple|Arnos
 
 my $ALL_MEM_VENDORS = "Ankowall|Atermiter|Axiom|BiNFUL|CFD|CompuStocx|DATEN|DERLAR|DeTech|DigiBoard|e2e4|HEXON|imation|JINSHA|KETECH|Kimtigo|KingBank|Kinlstuo|Kllisre|LEADMAX|MARKVISION|MINPO|MLLSE|MTASE|OSCOO|PLEXHD|Princeton|Ramsta|Reboto|RZX|Saikano|SemsoTai|SHARETRONIC|STARKORTIS|SUPER KINGSTEK|Team|Tigo|TIMETEC|TOP MEDIA|TRS Star|Vaseky|ZION";
 
-my @KNOWN_BSD = ("clonos", "desktopbsd", "dragonfly", "freenas", "fuguita", "furybsd", "ghostbsd", "hardenedbsd", "hellosystem", "libertybsd", "midnightbsd", "nomadbsd", "opnsense", "os108", "pcbsd", "pfsense", "truenas", "trueos", "xigmanas", "arisblu");
-my $KNOWN_BSD_ALL = join("|", @KNOWN_BSD);
-
 my $USE_DIGEST = 0;
 my $USE_DIGEST_ALT = "sha512sum";
 
@@ -2343,12 +2356,18 @@ sub hideDf($)
     my @DfLines = split(/\n/, $Content);
     
     my $BSD = isBSD();
+    my $Haiku = isHaiku();
     
     for (my $i = 0; $i <= $#DfLines; $i++)
     {
         my $L = $DfLines[$i];
         
         if($i==0)
+        {
+            $NewDf .= $L."\n";
+            next;
+        }
+        if($Haiku and $i==1)
         {
             $NewDf .= $L."\n";
             next;
@@ -2706,6 +2725,37 @@ sub uploadData()
         return;
     }
     
+    if(isHaiku($^O)) {
+        my $UploadURL = "https://transfer.sh/hw.info.txz";
+        my @Cmd = ("curl", "-s", "-S", "-f");
+        @Cmd = (@Cmd, "--upload-file ".$Pkg);
+        @Cmd = (@Cmd, $UploadURL);
+
+        my $CurlCmd = join(" ", @Cmd);
+        my $Log = runCmd("$CurlCmd 2>&1");
+        my $Err = $?;
+        my $HttpsErr = 0;
+        if($Log=~/(https:\/\/transfer.sh\/\w+)/) {
+            $RecentProbe = $1;
+            # Log to sheet
+            my @Cmd = ("curl", "-s", "-S", "-f");
+            @Cmd = (@Cmd, "https://docs.google.com/forms/d/e/1FAIpQLSegLUiB1ODbYaPyxUjcDVhTwI5A_3qG3Rx-zajYT7oEQktRCQ/formResponse");
+            @Cmd = (@Cmd, "-d ifq", "-d", "entry.208601440=" . $RecentProbe, "-d", "submit=Submit");
+            my $CurlCmd = join(" ", @Cmd);
+            my $Log = runCmd("$CurlCmd 2>&1");
+            my $Err = $?;
+
+            my $Time = time;
+            my $ProbeLog = "PROBE\n=====\nDate: ".localtime($Time)." ($Time)\n";
+
+            $ProbeLog .= "Probe URL: $RecentProbe" . "/hw.info.txz\n";
+
+            appendFile($PROBE_LOG, $ProbeLog."\n");
+
+        }
+        return;
+    }
+
     my $UploadURL = $URL."/upload_result.php";
     my $Salt = getSha512L($SALT_CLIENT, 10);
     
@@ -3700,7 +3750,11 @@ sub probeHW()
             
             my @NeedProgs = ("dmidecode", "smartctl");
             
-            if(isOpenBSD())
+            if(isHaiku())
+            {
+                push(@NeedProgs, "listdev");
+            }
+            elsif(isOpenBSD())
             {
                 push(@NeedProgs, "lscpu", "usbctl", "curl"); # we have pcidump and usbdevs on OpenBSD by default
                 
@@ -3796,7 +3850,7 @@ sub probeHW()
             {
                 if(enabledLog($Prog) and not checkCmd($Prog))
                 {
-                    if(isBSD())
+                    if(isBSD() or isHaiku())
                     {
                         if(not defined $Opt{"InstallDeps"}) {
                             printMsg("ERROR", "'".$CmdPackage{$Prog}."' package is not installed");
@@ -3838,6 +3892,10 @@ sub probeHW()
                         $NeedCmd = "env PACKAGESITE='http://ftp-archive.freebsd.org/pub/FreeBSD-Archive/ports/".$Sys{"Arch"}."/packages-".$Sys{"Freebsd_release"}."-release/Latest/' pkg_add -r";
                     }
                 }
+                elsif(isHaiku()) {
+                    $NeedCmd = "pkgman install";
+                }
+
                 
                 $NeedCmd .= " ".join(" ", @NeedToInstall);
                 
@@ -5427,6 +5485,29 @@ sub probeHW()
             writeLog($LOG_DIR."/dmesg", $Dmesg);
         }
     }
+
+    if(enabledLog("syslog"))
+    {
+        listProbe("logs", "syslog");
+
+        my $SyslogBoot = "/var/log/syslog";
+        if(isHaiku() and -e $SyslogBoot) {
+            $Syslog = readFile($SyslogBoot);
+        }
+        my $SyslogBootOld = "/var/log/syslog.old";
+        if(isHaiku() and -e $SyslogBootOld) {
+            $SyslogOld = readFile($SyslogBootOld);
+            $Syslog .= $SyslogOld
+        }
+
+        $Syslog=~s/(.|\n)+(KERN: options = 0)/$2/g; # last boot only
+
+        $Syslog = hideDmesg($Syslog);
+
+        if($Opt{"HWLogs"}) {
+            writeLog($LOG_DIR."/syslog", $Syslog);
+        }
+    }
     
     my %PciNumDev = ();
     my %PciPPb = ();
@@ -5951,14 +6032,14 @@ sub probeHW()
     if($Opt{"FixProbe"}) {
         $Lspci = readFile($FixProbe_Logs."/lspci");
     }
-    else
+    elsif(enabledLog("lspci"))
     {
         if(checkCmd("lspci"))
         {
             listProbe("logs", "lspci");
             
             my $PciLink = createIDsLink("pci");
-            if(isBSD()) {
+            if(isBSD() or isHaiku()) {
                 $Lspci = runCmd("lspci -vmnn 2>&1");
             }
             else {
@@ -6472,14 +6553,21 @@ sub probeHW()
     if($Opt{"FixProbe"}) {
         $Lsusb = readFile($FixProbe_Logs."/lsusb");
     }
-    else
+    elsif(enabledLog("lsusb"))
     {
-        if(checkCmd("lsusb"))
+        if(isHaiku() and checkCmd("listusb") or checkCmd("lsusb"))
         {
             listProbe("logs", "lsusb");
             
             my $UsbLink = createIDsLink("usb");
-            $Lsusb = runCmd("lsusb -v 2>&1");
+            if(isHaiku())
+            {
+               $Lsusb = runCmd("listusb -v 2>&1");
+            }
+            else
+            {
+               $Lsusb = runCmd("lsusb -v 2>&1");
+            }
             if($UsbLink) {
                 unlink($UsbLink);
             }
@@ -6502,12 +6590,12 @@ sub probeHW()
         $Lsusb = "";
     }
     
-    foreach my $Info (split(/\n\n/, $Lsusb))
+    foreach my $Info (isHaiku() ? split(/\[Device/, $Lsusb) : split(/\n\n/, $Lsusb))
     {
         my %Device = ();
         my ($V, $D, @Class) = ();
         
-        if($Info=~/idVendor[ ]+0x(\w{4})[ ]+(.*)/)
+        if(isHaiku() and $Info=~/Vendor ID [\.]+ 0x(\w{4})(.*)\n/ or $Info=~/idVendor[ ]+0x(\w{4})[ ]+(.*)/)
         {
             $V = $1;
             
@@ -6516,7 +6604,7 @@ sub probeHW()
             }
         }
         
-        if($Info=~/idProduct[ ]+0x(\w{4})[ ]+(.*)/)
+        if(isHaiku() and $Info=~/Product ID [\.]+ 0x(\w{4})(.*)\n/ or $Info=~/idProduct[ ]+0x(\w{4})[ ]+(.*)/)
         {
             $D = $1;
             
@@ -6525,14 +6613,32 @@ sub probeHW()
             }
         }
         
-        if($Info=~/bInterfaceClass\s+(\w+)\s+/) {
-            push(@Class, fNum(sprintf('%x', $1)));
+        next if($D == "0x0000" and $V == "0x0000");
+
+        if(isHaiku())
+        {
+            if($Info=~/\[Interface.+Class [\.]+ 0x(\w+)\s+/s) {
+                push(@Class, fNum(sprintf('%d', $1)));
+            }
+            if($Info=~/\[Interface.+Subclass [\.]+ 0x(\w+)\s+/s) {
+                push(@Class, fNum(sprintf('%d', $1)));
+            }
+            if($Info=~/Interface.+Protocol [\.]+ 0x(\w+)\s+/s) {
+                push(@Class, fNum(sprintf('%d', $1)));
+            }
         }
-        if($Info=~/bInterfaceSubClass\s+(\w+)\s+/) {
-            push(@Class, fNum(sprintf('%x', $1)));
-        }
-        if($Info=~/bInterfaceProtocol\s+(\w+)\s+/) {
-            push(@Class, fNum(sprintf('%x', $1)));
+        else
+        {
+            if($Info=~/bInterfaceClass\s+(\w+)\s+/) {
+                push(@Class, fNum(sprintf('%x', $1)));
+            }
+            if($Info=~/bInterfaceSubClass\s+(\w+)\s+/) {
+                push(@Class, fNum(sprintf('%x', $1)));
+            }
+           if(Info=~/bInterfaceProtocol\s+(\w+)\s+/) {
+                push(@Class, fNum(sprintf('%x', $1)));
+            }
+
         }
         
         $Device{"Class"} = devID(@Class);
@@ -9489,7 +9595,7 @@ sub probeHW()
     if($Opt{"FixProbe"}) {
         $XLog = readFile($FixProbe_Logs."/xorg.log");
     }
-    else
+    elsif(not isHaiku())
     {
         listProbe("logs", "xorg.log");
         $XLog = readFile("/var/log/Xorg.0.log");
@@ -10392,7 +10498,12 @@ sub probeHW()
     {
         listProbe("logs", "df");
         
-        $Df = runCmd("df -Th 2>/dev/null");
+        my $DfCmd = "df -Th 2>/dev/null";
+        if(isHaiku)
+        {
+            $DfCmd = "df 2>/dev/null";
+        }
+        $Df = runCmd($DfCmd);
         if(not $Df)
         { # OpenBSD, NetBSD, FreeBSD < 8.0
             $Df = runCmd("df -h 2>/dev/null");
@@ -14368,6 +14479,7 @@ sub probeDistr()
     my ($Name, $Release, $Descr) = ();
     
     my $FreeBSDVer = "";
+    my $HaikuVer = "";
     my $OPNsenseVer = "";
     
     my $OSname = "";
@@ -14380,7 +14492,21 @@ sub probeDistr()
     }
     else
     {
-        if(isBSD($^O))
+        if(isHaiku($^O))
+        {
+            if(checkCmd("uname"))
+            {
+                listProbe("logs", "haiku-version");
+                $HaikuVer = runCmd("uname -v");
+
+                if($Opt{"HWLogs"}) {
+                    writeLog($LOG_DIR."/haiku-version", $HaikuVer);
+                }
+            }
+            $OSname = $^O;
+            writeLog($LOG_DIR."/osname", $OSname);
+        }
+        elsif(isBSD($^O))
         {
             if(checkCmd("freebsd-version"))
             {
@@ -14417,7 +14543,15 @@ sub probeDistr()
         $Sys{"Freebsd_version"} = $FreeBSDVer;
     }
     
-    if(isBSD($Name))
+    if(isHaiku($Name))
+    {
+        if($HaikuVer)
+        {
+            $Release = $HaikuVer;
+            $Sys{"Haiku_version"} = $HaikuVer;
+        }
+    }
+    elsif(isBSD($Name))
     {
         if(not $Release) {
             $Release = $Sys{"Kernel"};
@@ -14683,7 +14817,7 @@ sub probeDistr()
     if($Opt{"FixProbe"}) {
         $LSB_Rel = readFile($FixProbe_Logs."/lsb_release");
     }
-    elsif(not isBSD($Name) and not $Opt{"Docker"}
+    elsif(not isHaiku($Name) and not isBSD($Name) and not $Opt{"Docker"}
     and not $Opt{"Snap"} and not $Opt{"Flatpak"}
     and checkCmd("lsb_release"))
     {
@@ -17330,6 +17464,25 @@ my %EnabledLog_BSD = (
     "optional" => []
 );
 
+my %EnabledLog_Haiku = (
+    "minimal" => [
+        "curl",
+        "df",
+        "dmidecode",
+        "ifconfig",
+        "syslog",
+    ],
+    "default" => [
+        "lspci",
+        "lsusb",
+        "uptime",
+    ],
+    "maximal" => [
+        "sysinfo"
+    ],
+    "optional" => []
+);
+
 sub completeEnabledLogs()
 {
     foreach my $LL ("minimal", "default")
@@ -18654,6 +18807,16 @@ sub isOpenBSD(@_)
     return $OS=~/openbsd|fuguita|libertybsd/;
 }
 
+sub isHaiku(@_)
+{
+    my $OS = $Sys{"System"};
+    if(@_) {
+        $OS = shift(@_);
+    }
+
+    return $OS=~/haiku/;
+}
+
 sub scenario()
 {
     if($Opt{"Help"})
@@ -18779,7 +18942,22 @@ sub scenario()
         }
     }
     
-    if(isBSD($^O))
+    if(isHaiku($^O))
+    {
+        %EnabledLog = %EnabledLog_Haiku;
+        $URL = $URL_Haiku;
+
+        my @Exclude = ();
+
+        if(@Exclude)
+        {
+            my $Ex = join("|", @Exclude);
+            foreach my $K (keys(%EnabledLog)) {
+                @{$EnabledLog{$K}} = grep {$_!~/$Ex/} @{$EnabledLog{$K}};
+            }
+        }
+    }
+    elsif(isBSD($^O))
     {
         %EnabledLog = %EnabledLog_BSD;
         $URL = $URL_BSD;
